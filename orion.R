@@ -1,7 +1,9 @@
+# process the orion database data to aggregate all of the tax paying entties on
+# a parcel to the parcel itself
 library(data.table)
-# library(sf)
+library(sf)
 
-property <- fread("orion/Property.csv")
+property <- fread("data/orion/Property.csv")
 property <- property[PropCategory %in% c("RP", "RP   ")]
 for(col in c("Addr_PreDirectional", "Addr_RoadSuffix", "Addr_PostDirectional",
     "Addr_UnitNumber")) {
@@ -49,7 +51,6 @@ property <- condo_master[, .(PropertyID, CondoMasterID = CondoMasterId)][propert
 # Condos end in 7xxxx
 # if the property id is in condo_master$PropertyID then its parent is the parcel that's in 
 # IsParcel == TRUE with a GeoCode ending the in same Xxxx
-
 cm <- property[grepl("7\\d{3}$", GeoCode, perl = TRUE) & 
                  is.na(CondoMasterID) &
                  IsParcel == FALSE, .(PropertyID, GeoCode)]
@@ -63,22 +64,6 @@ property <- merge(property, cm[, .(PropertyID, CondoMasterID2)], by = "PropertyI
 property[is.na(CondoMasterID), CondoMasterID := CondoMasterID2]
 property[, CondoMasterID2 := NULL]
 
-# condos <- merge(condo_master, by = "PropertyID")
-# condos[, MasterGeoCode := paste0(substr(GeoCode, 1, 18), "-7000")]
-# match <- merge(condos[, .(CondoPropertyID = PropertyID, MasterGeoCode)], 
-#                property[IsParcel == TRUE, .(CondoMasterId = PropertyID,
-#                                             MasterGeoCode = GeoCode)],
-#                by = "MasterGeoCode")
-# # for condos that match, join using our rules
-# no_match <- condos[!(MasterGeoCode %in% property[IsParcel == TRUE]$GeoCode)]
-# no_match <- merge(no_match[, .(PropertyID)], condo_master, by = "PropertyID")
-# no_match <- merge(no_match[, .(CondoPropertyID = PropertyID, CondoMasterId)], 
-#                   property[, .(CondoMasterId = PropertyID,
-#                                MasterGeoCode = GeoCode)],
-#                   by = "CondoMasterId")
-# 
-# condo_comb <- rbind(match, no_match)
-# property <- merge(property, condo_comb, by.x = "PropertyID", by.y = "CondoPropertyID", all.x = TRUE)
 
 
 # MOBILE HOMES --------------------------------
@@ -92,14 +77,9 @@ uniqueN(mh$MobileHomeMasterID)
 
 property <- merge(property, mh[, .(PropertyID, MobileHomeMasterID)], by = "PropertyID", all.x = TRUE)
 
-# property[!is.na(CondoMasterId), ParcelID := CondoMasterId]
-# property[!is.na(MHMasterPropertyID), ParcelID := MHMasterPropertyID]
-# property[is.na(ParcelID) & IsParcel == TRUE, ParcelID := PropertyID]
-# table(is.na(property$ParcelID))
 
-#property[, id := 1:60854]
 # Linked Properties -----------------------------
-linked_property <- fread("orion/LinkedProperty.csv")
+linked_property <- fread("data/orion/LinkedProperty.csv")
 linked_property <- linked_property[LinkTypeDesc %in%
                                      c("3 - Agricultural (tieback is primary parcel)", "Real Property/Personal Property Link", 
                                        "9 - Other", "1 - Imps Linked to Land Owned by Others", 
@@ -108,29 +88,39 @@ linked_property <- linked_property[LinkTypeDesc %in%
 linked_props <- linked_property[!duplicated(linked_property$PropertyID), .(PropertyID, LinkedPropertyID)]
 property <- merge(property, linked_props, all.x = TRUE, by = "PropertyID")
 
-# property <- merge(property,
-#                   linked_property[LinkedPropertyID %in% property[is.na(ParcelID) & IsParcel == TRUE]$PropertyID,
-#                                   .(PropertyID, LinkedPropertyID)],
-#                   by = "PropertyID", all.x = TRUE)
-# View(merge(property,
-#            linked_property[LinkedPropertyID %in% property[is.na(ParcelID) & IsParcel == TRUE]$PropertyID,
-#                            .(PropertyID, LinkedPropertyID)],
-#            by = "PropertyID"))
+# Other Unlinkec 4XXX Properties
+# property[, BaseGeoCode := substr(GeoCode, 1, 18)]
+op <- property[grepl("4\\d{3}$", GeoCode, perl = TRUE) & 
+                 is.na(CondoMasterID) &
+                 IsParcel == FALSE, .(PropertyID, GeoCode)]
+op[, MasterGeoCode := paste0(substr(GeoCode, 1, 18), "-0000")]
+op <- merge(op, property[IsParcel == TRUE, .(MasterGeoCode = GeoCode, MasterID = PropertyID)],
+            by = "MasterGeoCode")            
+uniqueN(op$PropertyID)
+uniqueN(op$MasterID)
+property <- merge(property, op[, .(PropertyID, MasterID)], by = "PropertyID", all.x = TRUE)
 
-# property[is.na(ParcelID) & !is.na(LinkedPropertyID), ParcelID := LinkedPropertyID]
+op <- property[grepl("4\\d{3}$", GeoCode, perl = TRUE) & 
+                 is.na(CondoMasterID) & is.na(MasterID) &
+                 IsParcel == FALSE, .(PropertyID, GeoCode)]
 
-# View(property[is.na(ParcelID)])
-View(property[Addr_Number == "105" & Addr_PreDirectional == "W" & Addr_Street == "MAIN"])
-View(property[Addr_Number == "5" & Addr_PreDirectional == "W" & Addr_Street == "MENDENHALL"])
+# Assign ParcelID based on lookup
 
-# Okay, now let's join parcel-less properties to the first parcel WITH an address
+property[!is.na(MobileHomeMasterID), ParcelID := MobileHomeMasterID]
+property[!is.na(MasterID), ParcelID := MasterID]
+property[!is.na(CondoMasterID), ParcelID := CondoMasterID]
+property[is.na(ParcelID) & IsParcel, ParcelID := PropertyID]
+
+# Okay, now let's join parcel-less properties to the first parcel WITH an ADDRESS
+# The STRAGGLERS
 parcels <- property[IsParcel == TRUE]
 parcel_addys <- parcels[!duplicated(parcels[, .(Addr_Number, Addr_PreDirectional, Addr_Street, Addr_City)]),
                          .(ParcelPropertyID = PropertyID, Addr_Number, Addr_PreDirectional, Addr_Street, Addr_City)]
 parcel_addys <- parcel_addys[!(is.na(Addr_Number) | is.na(Addr_Street) | is.na(Addr_City))]
 setorder(parcel_addys, Addr_City, Addr_Street, Addr_PreDirectional, Addr_Number)
 
-parcelless <- property[IsParcel == FALSE & is.na(ParcelID) & !(is.na(Addr_Number) | is.na(Addr_Street) | is.na(Addr_City)), 
+parcelless <- property[IsParcel == FALSE & 
+                         is.na(ParcelID) & !(is.na(Addr_Number) | is.na(Addr_Street) | is.na(Addr_City)), 
                        .(PropertyID, Addr_Number, Addr_PreDirectional, Addr_Street, Addr_City)]
 
 parcel_match <- merge(parcelless, parcel_addys, by = c("Addr_Number", "Addr_PreDirectional", "Addr_Street", "Addr_City"))
@@ -141,12 +131,15 @@ property <- merge(property, parcel_match[, .(PropertyID, ParcelPropertyID)],
 property[is.na(ParcelID) & !is.na(ParcelPropertyID), ParcelID := ParcelPropertyID]
 rm(parcels, parcel_addys, parcelless)
 
-# View(property[ParcelID == "641937"])
+
+# View(property[is.na(ParcelID)])
+View(property[Addr_Number == "105" & Addr_PreDirectional == "W" & Addr_Street == "MAIN"])
+View(property[Addr_Number == "5" & Addr_PreDirectional == "W" & Addr_Street == "MENDENHALL"])
 
 # OWNER
-owner <- fread("orion/Owner.csv")
-party_name <- fread("orion/PartyName.csv")
-party_addr <- fread("orion/PartyAddr.csv")
+owner <- fread("data/orion/Owner.csv")
+party_name <- fread("data/orion/PartyName.csv")
+party_addr <- fread("data/orion/PartyAddr.csv")
 parties <- party_name[, .(owner_name = paste(FullName, collapse = " & ")), by = PartyID]
 owner <- merge(owner, parties, by = "PartyID")
 rm(parties, party_name, party_addr)
@@ -171,12 +164,12 @@ parcels <- property[IsParcel == TRUE,
                 )]
 
 # ASSESSMENTS ------------------------------------
-assessment <- fread("orion/Assessment.csv")
-class_codes <- fread("orion/ClassCodes.csv")
+assessment <- fread("data/orion/Assessment.csv")
+class_codes <- fread("data/orion/ClassCodes.csv")
 assessment <- merge(assessment, class_codes, by.x = "ClassCode", by.y = "Code")
+rm(class_codes)
 
 assessments <- merge(property, assessment, by = "PropertyID")
-rm(class_codes)
 
 #View(DT[ParcelID == "641937"])
 # Aggregate to parcels
@@ -199,7 +192,7 @@ parcel_sums <- assessments[,
     TaxablePct = mean(as.numeric(TaxablePct), 0, na.rm = TRUE), 
     TaxableVal = sum(as.numeric(TaxableValue), na.rm = TRUE), 
     TotAcres = sum(as.numeric(Acres), na.rm = TRUE), 
-    AvgMills = mean(TotalMills, na.rm = TRUE), 
+    Mills = Mode(TotalMills, na.rm = TRUE), 
     TaxAmount = sum(as.numeric(TaxAmount), na.rm = TRUE),
     PropCount = uniqueN(PropertyID),
     AssmntCount = .N
@@ -208,15 +201,57 @@ parcel_sums <- assessments[,
 
 res <- merge(parcels, parcel_sums, by = "ParcelID")
 
-View(res[ParcelID == "641927"])
-View(res[ParcelID == "641937"])
-
+View(res[ParcelID == "641927"]) # Me
+View(res[ParcelID == "641937"]) # Five West
+View(res[ParcelID == "639417"]) # Mall
 fwrite(res, file = "out/parcel_tax.csv")
 
 
-pids <- unique(property[Addr_Number == "5" & Addr_PreDirectional == "W" & Addr_Street == "MENDENHALL"]$PropertyID)
-View(property[PropertyID %in% pids])
-asmnts <- assessment[PropertyID %in% pids]
-sum(as.numeric(asmnts$TaxAmount), na.rm = TRUE)
+# create a shapefile
 
-View(res[TaxAmount == 0, .N, by = PropertyClass])
+sum(res$TaxAmount)
+
+parcels <- st_read("shp/GallatinOwnerParcel_shp/GallatinOwnerParcel_shp.shp", stringsAsFactors = FALSE)
+parcels <- st_transform(parcels, 26912)
+parcels[parcels$TotalAcres == 0, ]$TotalAcres <- parcels[parcels$TotalAcres == 0, ]$GISAcres
+parcels <- parcels[, c("PARCELID", "COUNTYCD", "GISAcres", "TaxYear", "PropertyID", 
+                       "Assessment", "Township", "Range", "Section_", "LegalDescr", 
+                       "Subdivisio", "Certificat", "AddressLin", "AddressL_1", "CityStateZ", 
+                       "PropAccess", "LevyDistri", "PropType", "Continuous", 
+                       "TotalAcres", "TotalBuild", "TotalLandV", "TotalValue", 
+                       "OwnerName", "OwnerAddre", "OwnerAdd_1", "OwnerAdd_2", "OwnerCity", 
+                       "OwnerState", "OwnerZipCo", 
+                       "geometry")]
+
+cob_limits <- st_read("../shapefiles/City_Limits/City_Limits.shp")
+stopifnot(st_crs(parcels) == st_crs(cob_limits))
+
+setDF(res)
+is.nan.data.frame <- function(x)
+  do.call(cbind, lapply(x, is.nan))
+res[is.nan(res)] <- NA
+
+sf <- st_filter(parcels, cob_limits)
+sf <- merge(sf, res, by.x = "PARCELID", by.y = "GeoCodeSearch")
+sf$PropertyID <- sf$ParcelID
+sf$ParcelID <- NULL
+
+sf <- sf[, c("PARCELID","Assessment", "TaxYear",
+             #  "LegalDescr",
+             # 
+             # "PropAccess", "LevyDistri", "Continuous", 
+             # , "OwnerAddre",
+             # "OwnerAdd_1", "OwnerAdd_2","OwnerZipCo",
+             "TotalAcres", "TotalBuild", "TotalLandV", "TotalValue", 
+               "GeoCode", "AssessmentCode", "Address", 
+             "COBAssessmentCode", "Subdivision", # "LegalDescription",
+             "ParcelPropType", "PropertyClass", "LivUnits",
+             "LandValue", "BldgValue", "MktValue", "TaxablePct", "TaxableVal",
+             "Mills", "TaxAmount", "PropCount", "AssmntCount",
+             "Subdivisio", "Certificat", "AddressLin", "AddressL_1", "CityStateZ",
+             "OwnerName",  "OwnerCity", "OwnerState", 
+             "geometry")]
+
+sf$TaxPerAcre <- sf$TaxAmount / sf$TotalAcres
+
+st_write(sf, "out/bozeman_parcel_tax/parcels.gpkg", delete_layer = TRUE)
