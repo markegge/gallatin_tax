@@ -9,3 +9,7 @@ The property tax data for 2019 / 2020 is downloaded from [ftp://ftp.geoinfo.msl.
 ## Data Processing
 
 The data processing in `orion.R` attempts to create relationships between the various properties listed and the underlying parcels.
+
+## Output
+
+The resulting map of property tax paid per parcel is available at [https://eateggs.com/maps/parcel_tax/](https://eateggs.com/maps/parcel_tax/)
